@@ -341,9 +341,22 @@ public final class KokoroTTS {
     // Project to duration values
     let durationLogits = durationProj(lstmOutput)
     
-    // Convert to actual durations (clamped to minimum of 1 frame)
-    let durationSigmoid = MLX.sigmoid(durationLogits).sum(axis: -1) / speed
-    let predictedDurations = MLX.clip(durationSigmoid.round(), min: 1).asType(.int32)[0]
+    // Convert to actual durations. A sum of `max_dur` (config.json, 50)
+    // sigmoid outputs is mathematically bounded to [0, 50] per phoneme for
+    // well-formed input, but if some upstream computation produces NaN/Inf
+    // for a particular input (numerical instability in the LSTM/attention
+    // stack), sigmoid(NaN) is NaN, and casting a non-finite float to Int32
+    // is undefined behavior that can yield a huge garbage value. That
+    // garbage value then sizes every downstream tensor (the alignment
+    // matrix, decoder, final audio), producing a single allocation of
+    // several gigabytes that hard-crashes in Metal before Swift ever gets
+    // a chance to catch anything. Replace non-finite values with a safe
+    // fallback before rounding, then clamp to the model's own valid
+    // per-phoneme duration range as a hard backstop (previously only the
+    // minimum was clamped).
+    let rawDurationSigmoid = MLX.sigmoid(durationLogits).sum(axis: -1) / speed
+    let durationSigmoid = MLX.nanToNum(rawDurationSigmoid, nan: 1, posInf: 50, negInf: 1)
+    let predictedDurations = MLX.clip(durationSigmoid.round(), min: 1, max: 50).asType(.int32)[0]
     
     // Create alignment matrix
     return (predictedDurations, createAlignmentTarget(durations: predictedDurations, batchSize: batchSize))
