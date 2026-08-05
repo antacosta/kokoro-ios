@@ -257,7 +257,10 @@ public final class KokoroTTS {
 
     // Step 7: Predict prosody (F0, pitch)
     let (f0Prediction, nPrediction) = prosodyPredictor.F0NTrain(x: alignedEncoding, s: globalStyle)
-    print("[KokoroDiag] step7 f0Prediction=\(f0Prediction.shape) nPrediction=\(nPrediction.shape)")
+    let f0Flat = f0Prediction.asArray(Float.self)
+    let nFlat = nPrediction.asArray(Float.self)
+    print("[KokoroDiag] step7 f0Prediction=\(f0Prediction.shape) min=\(f0Flat.min() ?? 0) max=\(f0Flat.max() ?? 0) mean=\(f0Flat.reduce(0,+)/Float(max(f0Flat.count,1))) first10=\(f0Flat.prefix(10))")
+    print("[KokoroDiag] step7 nPrediction=\(nPrediction.shape) min=\(nFlat.min() ?? 0) max=\(nFlat.max() ?? 0) mean=\(nFlat.reduce(0,+)/Float(max(nFlat.count,1)))")
 
     // Step 8: Encode text for decoder
     let textEncoding = textEncoder(paddedInputIds, inputLengths: inputLengths, m: textMask)
