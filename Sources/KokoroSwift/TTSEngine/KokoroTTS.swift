@@ -231,7 +231,10 @@ public final class KokoroTTS {
 
     // Step 3: Extract style embeddings from voice
     let (globalStyle, acousticStyle) = extractStyleEmbeddings(from: voice, tokenCount: inputIds.count)
-    print("[KokoroDiag] step3 globalStyle=\(globalStyle.shape) acousticStyle=\(acousticStyle.shape)")
+    let gsFlat = globalStyle.asArray(Float.self)
+    let asFlat = acousticStyle.asArray(Float.self)
+    print("[KokoroDiag] step3 globalStyle=\(globalStyle.shape) min=\(gsFlat.min() ?? 0) max=\(gsFlat.max() ?? 0) first5=\(gsFlat.prefix(5))")
+    print("[KokoroDiag] step3 acousticStyle=\(acousticStyle.shape) min=\(asFlat.min() ?? 0) max=\(asFlat.max() ?? 0) first5=\(asFlat.prefix(5))")
 
     // Step 4: Encode text with BERT and predict duration
     let durationFeatures = encodeBERTAndDuration(
