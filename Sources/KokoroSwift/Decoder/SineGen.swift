@@ -80,19 +80,21 @@ class SineGen {
     // Generate UV signal
     var uv = _f02uv(f0)
 
-    // Upstream-confirmed bug (Blaizzy/mlx-audio #803, fixed in PR #814):
-    // _f02sine's downsample -> cumsum -> upsample round trip is not
-    // strictly length-preserving -- it can emit sineWaves one
-    // upsampleScale hop (e.g. 300 samples) longer than uv, which is
-    // computed directly from f0 at its original length. Multiplying
-    // mismatched lengths either crashes (Python refuses to broadcast) or,
-    // depending on how the binding handles it, silently misaligns the
-    // harmonic and noise signals in time. Trim both to the minimum
-    // common length before combining, matching the upstream fix exactly.
-    let minLen = min(sineWaves.shape[1], uv.shape[1])
-    if sineWaves.shape[1] != minLen || uv.shape[1] != minLen {
-      sineWaves = sineWaves[0..., 0 ..< minLen, 0...]
-      uv = uv[0..., 0 ..< minLen, 0...]
+    // Correction: PR #814 (which the previous version of this comment
+    // cited as "upstream-confirmed") was actually REJECTED and CLOSED by
+    // the mlx-audio maintainer -- the -10/10 exp clamp was called "pretty
+    // arbitrary", and this trim-both-to-min-length approach was never
+    // merged either. The actual merged fix (commit cc30ce2, "Fix SineGen
+    // length alignment") only ever touches sineWaves, matching it to f0's
+    // length -- trimming if longer, zero-padding if shorter -- and never
+    // shortens uv/f0. Trimming uv (as the rejected PR did) would silently
+    // discard real, correctly-computed voiced/unvoiced samples whenever
+    // sineWaves came out shorter, which is a regression, not a fix.
+    let targetLen = f0.shape[1]
+    if sineWaves.shape[1] > targetLen {
+      sineWaves = sineWaves[0..., 0 ..< targetLen, 0...]
+    } else if sineWaves.shape[1] < targetLen {
+      sineWaves = MLX.padded(sineWaves, widths: [IntOrPair([0, 0]), IntOrPair([0, targetLen - sineWaves.shape[1]]), IntOrPair([0, 0])])
     }
 
     // Generate noise

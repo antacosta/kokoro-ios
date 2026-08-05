@@ -199,16 +199,20 @@ class Generator {
     newX = MLX.swappedAxes(newX, 2, 1)
     print("[KokoroDiag] generator postConv newX=\(newX.shape)")
 
-    // Upstream-confirmed bug (Blaizzy/mlx-audio #815, fixed in PR #814):
-    // convPost's raw output can reach magnitudes around ~1e11 for some
-    // inputs. Exponentiating that directly overflows float32 to inf,
-    // which then propagates as NaN through the iSTFT reconstruction --
-    // and even short of literal overflow, an unclamped, occasionally
-    // very large log-magnitude drives the reconstructed waveform's
-    // amplitude far outside any normal audio range, producing harsh,
-    // distorted output. Clamping the log-magnitude to [-10, 10] before
-    // exp() (matching common TTS spectrogram processing practice, and
-    // the exact bound used in the upstream fix) keeps this bounded.
+    // Correction: PR #814, previously cited here as "upstream-confirmed",
+    // was actually REJECTED and CLOSED by the mlx-audio maintainer, who
+    // called this exact -10/10 clamp "pretty arbitrary" -- it was never
+    // merged, and no equivalent clamp exists in current upstream. Kept
+    // here anyway, not as a correctness fix but as a defensive backstop:
+    // we directly observed (via the [KokoroDiag] final-samples print)
+    // this port producing raw output around -29...+33, wildly outside
+    // valid audio range, so *something* upstream of this is still wrong.
+    // Since Swift/MLX silently mis-broadcasts on shape mismatches instead
+    // of hard-crashing the way Python/NumPy would, this port can carry a
+    // corrupted intermediate value further than the Python reference ever
+    // could. The clamp only engages for pathological outliers and is a
+    // no-op for in-range audio, so it's safe to leave in place while the
+    // real root cause of the amplitude blowup is still being tracked down.
     let logMagnitude = MLX.clip(newX[0..., 0 ..< (postNFFt / 2 + 1), 0...], min: -10.0, max: 10.0)
     let spec = MLX.exp(logMagnitude)
     let phase = MLX.sin(newX[0..., (postNFFt / 2 + 1)..., 0...])
