@@ -151,7 +151,9 @@ class Generator {
     print("[KokoroDiag] generator f0New(upsampled)=\(f0New.shape)")
 
     var (harSource, _, _) = mSource(f0New)
-    print("[KokoroDiag] generator harSource=\(harSource.shape)")
+    let harSourceFlat = harSource.asArray(Float.self)
+    let harNonFinite = harSourceFlat.filter { !$0.isFinite }.count
+    print("[KokoroDiag] generator harSource=\(harSource.shape) nonFiniteCount=\(harNonFinite) min=\(harSourceFlat.min() ?? 0) max=\(harSourceFlat.max() ?? 0)")
 
     harSource = MLX.squeezed(harSource.transposed(0, 2, 1), axis: 1)
     let (harSpec, harPhase) = stft.transform(inputData: harSource)
@@ -198,9 +200,12 @@ class Generator {
 
     let spec = MLX.exp(newX[0..., 0 ..< (postNFFt / 2 + 1), 0...])
     let phase = MLX.sin(newX[0..., (postNFFt / 2 + 1)..., 0...])
+    let specFlat = spec.asArray(Float.self)
+    print("[KokoroDiag] generator spec nonFiniteCount=\(specFlat.filter { !$0.isFinite }.count) min=\(specFlat.min() ?? 0) max=\(specFlat.max() ?? 0)")
 
     let result = stft.inverse(magnitude: spec, phase: phase)
-    print("[KokoroDiag] generator result=\(result.shape)")
+    let resultFlat = result.asArray(Float.self)
+    print("[KokoroDiag] generator result=\(result.shape) nonFiniteCount=\(resultFlat.filter { !$0.isFinite }.count) min=\(resultFlat.min() ?? 0) max=\(resultFlat.max() ?? 0)")
     return result
   }
 }

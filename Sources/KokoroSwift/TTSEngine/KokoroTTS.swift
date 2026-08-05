@@ -232,7 +232,14 @@ public final class KokoroTTS {
     // Stop performance timing
     BenchmarkTimer.stopTimer(Constants.bm_TTS)
 
-    return (audio[0].asArray(Float.self), tokenArray)
+    let samples = audio[0].asArray(Float.self)
+    let nanCount = samples.filter { !$0.isFinite }.count
+    let minVal = samples.min() ?? 0
+    let maxVal = samples.max() ?? 0
+    let meanAbs = samples.isEmpty ? 0 : samples.reduce(Float(0)) { $0 + abs($1) } / Float(samples.count)
+    print("[KokoroDiag] final samples count=\(samples.count) nonFiniteCount=\(nanCount) min=\(minVal) max=\(maxVal) meanAbs=\(meanAbs) first10=\(samples.prefix(10))")
+
+    return (samples, tokenArray)
   }
   
   /// Updates the G2P language if it differs from the current language.
