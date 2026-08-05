@@ -190,6 +190,9 @@ class Generator {
         }
       }
       newX = xs! / numKernels
+      let stageFlat = newX.asArray(Float.self)
+      let stageMeanAbs = stageFlat.isEmpty ? 0 : stageFlat.reduce(Float(0)) { $0 + abs($1) } / Float(stageFlat.count)
+      print("[KokoroDiag] generator resblockStage[\(i)] shape=\(newX.shape) min=\(stageFlat.min() ?? 0) max=\(stageFlat.max() ?? 0) meanAbs=\(stageMeanAbs)")
     }
 
     newX = LeakyReLU(negativeSlope: 0.01)(newX)
