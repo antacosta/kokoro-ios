@@ -147,6 +147,55 @@ public final class KokoroTTS {
 
     // Initialize G2P processor for text-to-phoneme conversion
     g2pProcessor = try? G2PFactory.createG2PProcessor(engine: g2p)
+
+    Self.runSTFTRoundTripSelfTest()
+  }
+
+  /// TEMPORARY diagnostic: verifies MLXSTFT's transform -> inverse round
+  /// trip in isolation, on a known synthetic signal, completely independent
+  /// of the neural network. Generated audio has been observed with a
+  /// corrupted waveform shape (not just wrong scale -- peak-normalizing
+  /// didn't fix perceived quality), so this checks whether the hand-written
+  /// ISTFT reimplementation itself faithfully reconstructs a signal it
+  /// itself decomposed, before suspecting anything upstream (weights,
+  /// duration/F0 prediction, etc).
+  private static func runSTFTRoundTripSelfTest() {
+    let sampleRate: Float = 24000
+    let freq: Float = 220
+    let durationSeconds: Float = 0.5
+    let n = Int(sampleRate * durationSeconds)
+    let t = MLXArray(0 ..< n).asType(.float32) / sampleRate
+    let original = MLX.sin(2 * Float.pi * freq * t)
+
+    let stft = MLXSTFT(filterLength: 20, hopLength: 5, winLength: 20)
+    let (magnitude, phase) = stft.transform(inputData: original)
+    let reconstructed = stft.inverse(magnitude: magnitude, phase: phase)
+
+    let originalArr = original.asArray(Float.self)
+    let reconstructedArr = reconstructed.reshaped([-1]).asArray(Float.self)
+
+    print("[KokoroDiag] STFT self-test: original.count=\(originalArr.count) reconstructed.count=\(reconstructedArr.count)")
+    print("[KokoroDiag] STFT self-test: original first10=\(originalArr.prefix(10))")
+    print("[KokoroDiag] STFT self-test: reconstructed first10=\(reconstructedArr.prefix(10))")
+
+    let compareLen = min(originalArr.count, reconstructedArr.count)
+    guard compareLen > 0 else {
+      print("[KokoroDiag] STFT self-test: compareLen is 0, cannot compare")
+      return
+    }
+
+    var maxDiff: Float = 0
+    var sumSqDiff: Float = 0
+    var sumSqOrig: Float = 0
+    for i in 0 ..< compareLen {
+      let diff = abs(originalArr[i] - reconstructedArr[i])
+      maxDiff = max(maxDiff, diff)
+      sumSqDiff += diff * diff
+      sumSqOrig += originalArr[i] * originalArr[i]
+    }
+    let rmse = (sumSqDiff / Float(compareLen)).squareRoot()
+    let origRms = (sumSqOrig / Float(compareLen)).squareRoot()
+    print("[KokoroDiag] STFT self-test: compareLen=\(compareLen) maxDiff=\(maxDiff) rmse=\(rmse) origRms=\(origRms)")
   }
   
   /// Generates audio from text using the specified voice and parameters.
