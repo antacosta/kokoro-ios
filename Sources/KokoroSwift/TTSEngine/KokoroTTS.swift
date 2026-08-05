@@ -269,12 +269,32 @@ public final class KokoroTTS {
     let textEncoding = textEncoder(paddedInputIds, inputLengths: inputLengths, m: textMask)
     let teFlat = textEncoding.asArray(Float.self)
     print("[KokoroDiag] step8 textEncoding=\(textEncoding.shape) min=\(teFlat.min() ?? 0) max=\(teFlat.max() ?? 0)")
-    let colSums = alignmentTarget.sum(axis: 0)
+    let colSums = alignmentTarget.sum(axis: 1)
     let colSumsFlat = colSums.asArray(Float.self)
-    print("[KokoroDiag] step8 alignmentTarget=\(alignmentTarget.shape) colSum min=\(colSumsFlat.min() ?? 0) max=\(colSumsFlat.max() ?? 0)")
+    let atFlat = alignmentTarget.asArray(Float.self)
+    let onesCount = atFlat.filter { $0 == 1.0 }.count
+    let nonBinaryCount = atFlat.filter { $0 != 0.0 && $0 != 1.0 }.count
+    print("[KokoroDiag] step8 alignmentTarget=\(alignmentTarget.shape) colSum min=\(colSumsFlat.min() ?? 0) max=\(colSumsFlat.max() ?? 0) onesCount=\(onesCount) nonBinaryCount=\(nonBinaryCount) totalFrames=\(alignmentTarget.shape[2])")
     let asrFeatures = MLX.matmul(textEncoding, alignmentTarget)
     let asrFlat0 = asrFeatures.asArray(Float.self)
     print("[KokoroDiag] step8 asrFeatures=\(asrFeatures.shape) min=\(asrFlat0.min() ?? 0) max=\(asrFlat0.max() ?? 0)")
+
+    // Direct selection-equality check: for frame 0, find which phoneme
+    // column the alignment matrix selects, then verify asrFeatures[:,:,0]
+    // exactly equals textEncoding[:,:,thatPhoneme]. If the alignment
+    // matrix is truly one-hot, these must match exactly (a copy, not a
+    // blend), and asrFeatures can then never exceed textEncoding's range.
+    let alignmentTargetSqueezed = alignmentTarget.squeezed(axis: 0)
+    let frame0Column = alignmentTargetSqueezed[0..., 0]
+    let frame0Flat = frame0Column.asArray(Float.self)
+    if let selectedPhoneme = frame0Flat.firstIndex(where: { $0 == 1.0 }) {
+      let teCol = textEncoding[0..., 0..., selectedPhoneme].asArray(Float.self)
+      let asrCol = asrFeatures[0..., 0..., 0].asArray(Float.self)
+      let maxDiff = zip(teCol, asrCol).map { abs($0 - $1) }.max() ?? -1
+      print("[KokoroDiag] step8 frame0 selectedPhoneme=\(selectedPhoneme) maxDiffVsTextEncodingCol=\(maxDiff)")
+    } else {
+      print("[KokoroDiag] step8 frame0 has NO selected phoneme (column sum 0)")
+    }
 
     // Step 9: Generate audio
     let audio = decoder(
