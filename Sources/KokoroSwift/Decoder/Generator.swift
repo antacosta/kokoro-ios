@@ -50,15 +50,15 @@ class Generator {
     ups = []
 
     for (i, (u, k)) in zip(upsampleRates, upsampleKernelSizes).enumerated() {
-      ups.append(
-        ConvWeighted(
-          weightG: weights["decoder.generator.ups.\(i).weight_g"]!,
-          weightV: weights["decoder.generator.ups.\(i).weight_v"]!,
-          bias: weights["decoder.generator.ups.\(i).bias"]!,
-          stride: u,
-          padding: (k - u) / 2
-        )
+      let upConv = ConvWeighted(
+        weightG: weights["decoder.generator.ups.\(i).weight_g"]!,
+        weightV: weights["decoder.generator.ups.\(i).weight_v"]!,
+        bias: weights["decoder.generator.ups.\(i).bias"]!,
+        stride: u,
+        padding: (k - u) / 2
       )
+      upConv.debugLabel = "ups.\(i)"
+      ups.append(upConv)
     }
 
     resBlocks = []
@@ -134,6 +134,7 @@ class Generator {
       stride: 1,
       padding: 3
     )
+    convPost.debugLabel = "conv_post"
 
     reflectionPad = ReflectionPad1d(padding: (1, 0))
 

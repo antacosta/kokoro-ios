@@ -17,6 +17,12 @@ class ConvWeighted: Module {
   let outputPadding: Int
   let groups: Int
 
+  /// TEMPORARY diagnostic label. When set, callAsFunction prints x/weight
+  /// shapes and which orientation branch gets used, so we can verify the
+  /// full weight-orientation chain (WeightLoader + weightNorm + this
+  /// runtime fallback) end to end for specific named layers.
+  var debugLabel: String?
+
   init(
     weightG: MLXArray,
     weightV: MLXArray,
@@ -117,13 +123,16 @@ class ConvWeighted: Module {
       return result
     }
 
+    if let debugLabel {
+      print("[KokoroDiag] ConvWeighted[\(debugLabel)] x=\(x.shape) weight=\(weight.shape) willTransposeFallback=\(!(x.shape.last == weight.shape.last || groups > 1))")
+    }
     if x.shape.last == weight.shape.last || groups > 1 {
       return applyConv(x: x, weightToUse: weight)
     } else {
       return applyConv(x: x, weightToUse: weight.transposed())
     }
   }
-  
+
   public func callAsFunction(_ x: MLXArray, conv: (MLXArray, MLXArray, Int, Int, Int, Int, Int, StreamOrDevice) -> MLXArray) -> MLXArray {
     let weight = weightNorm(weightV: weightV, weightG: weightG, dim: 0)
     bias = bias?.reshaped([1, 1, -1])
@@ -146,6 +155,9 @@ class ConvWeighted: Module {
       return result
     }
 
+    if let debugLabel {
+      print("[KokoroDiag] ConvWeighted[\(debugLabel)] x=\(x.shape) weight=\(weight.shape) willTransposeFallback=\(!(x.shape.last == weight.shape.last || groups > 1))")
+    }
     if x.shape.last == weight.shape.last || groups > 1 {
       return applyConv(x: x, weightToUse: weight)
     } else {
