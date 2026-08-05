@@ -58,7 +58,7 @@ final class WeightLoader {
           
         // Weight normalization V parameters need conditional transposition
         } else if key.contains("weight_v") {
-          sanitizedWeights[key] = orientWeightV(value)
+          sanitizedWeights[key] = checkArrayShape(arr: value) ? value : value.transposed(0, 2, 1)
         } else {
           sanitizedWeights[key] = value
         }
@@ -67,7 +67,7 @@ final class WeightLoader {
       } else if key.hasPrefix("text_encoder") {
         // Weight normalization V parameters need conditional transposition
         if key.contains("weight_v") {
-          sanitizedWeights[key] = orientWeightV(value)
+          sanitizedWeights[key] = checkArrayShape(arr: value) ? value : value.transposed(0, 2, 1)
         } else {
           sanitizedWeights[key] = value
         }
@@ -80,7 +80,7 @@ final class WeightLoader {
 
         // Weight normalization V parameters need conditional transposition
         } else if key.contains("weight_v") {
-          sanitizedWeights[key] = orientWeightV(value)
+          sanitizedWeights[key] = checkArrayShape(arr: value) ? value : value.transposed(0, 2, 1)
         } else {
           sanitizedWeights[key] = value
         }
@@ -90,31 +90,26 @@ final class WeightLoader {
     return sanitizedWeights
   }
 
-  /// Converts a `weight_v` tensor (from PyTorch's weight_norm
-  /// decomposition) from PyTorch's native per-layer-type shape into the
-  /// shape MLX's conv/convTransposed ops expect.
+  /// Checks if a 3D weight array has the correct shape and doesn't need transposition.
   ///
-  /// The previous approach (`checkArrayShape`) guessed per-layer whether to
-  /// swap axes based on whether the kernel dimension looked "square"
-  /// relative to the channel dimension -- inconsistent, and wrong whenever
-  /// a layer's actual kernel size doesn't coincidentally satisfy that
-  /// check. Confirmed against the reference PyTorch model (hexgrad/kokoro):
-  /// every weight_v tensor here uses weight_norm's default dim=0, so its
-  /// channel axis is always already at position 0 in PyTorch's native
-  /// layout -- [out, in, kernel] for Conv1d, [in, out, kernel] for
-  /// ConvTranspose1d, confirmed via decoder.generator.conv_post.weight_v
-  /// ([22, 128, 7]), decoder.generator.ups.0.weight_v ([512, 256, 20]),
-  /// and predictor.F0.0.conv1.weight_v ([512, 512, 3]) all matching their
-  /// reference nn.Conv1d/nn.ConvTranspose1d definitions exactly. MLX's
-  /// convention keeps that same channel axis first but wants kernel
-  /// second: [channel, kernel, other]. So every weight_v needs the same,
-  /// unconditional axes-1/2 swap -- never zero, and never a full reverse
-  /// (which is what the old heuristic's wrong branch, or ConvWeighted's
-  /// own runtime `x.shape.last == weight.shape.last` fallback comparing
-  /// channel-count to kernel-size, would otherwise apply on top and
-  /// scramble it a second time).
-  private static func orientWeightV(_ value: MLXArray) -> MLXArray {
-    guard value.shape.count == 3 else { return value }
-    return value.transposed(0, 2, 1)
+  /// REVERTED to this exact heuristic after finding it verbatim in the
+  /// authoritative reference: this Swift package is a port of
+  /// Blaizzy/mlx-audio's Python MLX implementation of Kokoro (not directly
+  /// of the original PyTorch model), and that project's `Decoder.sanitize()`
+  /// uses this identical check (`check_array_shape` in
+  /// mlx_audio/tts/models/base.py) for every weight_v key -- ups, conv_post,
+  /// resblocks, no special-casing. An earlier attempt "fixed" this into an
+  /// unconditional axes-1/2 swap based on the wrong assumption that this
+  /// heuristic was an arbitrary guess; it isn't -- it's the correct,
+  /// intentional logic, and forcing an unconditional swap silently broke
+  /// every layer where this legitimately returns true (skip transpose).
+  private static func checkArrayShape(arr: MLXArray) -> Bool {
+    guard arr.shape.count == 3 else { return false }
+
+    let outChannels = arr.shape[0]
+    let kH = arr.shape[1]
+    let kW = arr.shape[2]
+
+    return (outChannels >= kH) && (outChannels >= kW) && (kH == kW)
   }
 }
