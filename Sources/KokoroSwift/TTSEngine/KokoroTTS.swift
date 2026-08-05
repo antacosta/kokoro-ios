@@ -267,8 +267,14 @@ public final class KokoroTTS {
 
     // Step 8: Encode text for decoder
     let textEncoding = textEncoder(paddedInputIds, inputLengths: inputLengths, m: textMask)
+    let teFlat = textEncoding.asArray(Float.self)
+    print("[KokoroDiag] step8 textEncoding=\(textEncoding.shape) min=\(teFlat.min() ?? 0) max=\(teFlat.max() ?? 0)")
+    let colSums = alignmentTarget.sum(axis: 0)
+    let colSumsFlat = colSums.asArray(Float.self)
+    print("[KokoroDiag] step8 alignmentTarget=\(alignmentTarget.shape) colSum min=\(colSumsFlat.min() ?? 0) max=\(colSumsFlat.max() ?? 0)")
     let asrFeatures = MLX.matmul(textEncoding, alignmentTarget)
-    print("[KokoroDiag] step8 textEncoding=\(textEncoding.shape) asrFeatures=\(asrFeatures.shape)")
+    let asrFlat0 = asrFeatures.asArray(Float.self)
+    print("[KokoroDiag] step8 asrFeatures=\(asrFeatures.shape) min=\(asrFlat0.min() ?? 0) max=\(asrFlat0.max() ?? 0)")
 
     // Step 9: Generate audio
     let audio = decoder(
