@@ -77,7 +77,11 @@ class Decoder {
     let NSwapped = MLX.swappedAxes(N.reshaped([N.shape[0], 1, N.shape[1]]), 2, 1)
     let NProcessed = MLX.swappedAxes(NConv(NSwapped, conv: MLX.conv1d), 2, 1)
 
+    Self.logRange("asr(input)", asr)
+    Self.logRange("F0(convOut)", F0)
+    Self.logRange("NProcessed(convOut)", NProcessed)
     var x = MLX.concatenated([asr, F0, NProcessed], axis: 1)
+    Self.logRange("preEncode(concat)", x)
     x = encode(x: x, s: s)
     Self.logRange("encode", x)
 
