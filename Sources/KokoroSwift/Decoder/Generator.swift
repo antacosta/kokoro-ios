@@ -50,15 +50,13 @@ class Generator {
     ups = []
 
     for (i, (u, k)) in zip(upsampleRates, upsampleKernelSizes).enumerated() {
-      let upConv = ConvWeighted(
+      ups.append(ConvWeighted(
         weightG: weights["decoder.generator.ups.\(i).weight_g"]!,
         weightV: weights["decoder.generator.ups.\(i).weight_v"]!,
         bias: weights["decoder.generator.ups.\(i).bias"]!,
         stride: u,
         padding: (k - u) / 2
-      )
-      upConv.debugLabel = "ups.\(i)"
-      ups.append(upConv)
+      ))
     }
 
     resBlocks = []
@@ -134,7 +132,6 @@ class Generator {
       stride: 1,
       padding: 3
     )
-    convPost.debugLabel = "conv_post"
 
     reflectionPad = ReflectionPad1d(padding: (1, 0))
 
@@ -146,19 +143,13 @@ class Generator {
   }
 
   func callAsFunction(_ x: MLXArray, _ s: MLXArray, _ F0Curve: MLXArray) -> MLXArray {
-    print("[KokoroDiag] generator x=\(x.shape) F0Curve=\(F0Curve.shape)")
     var f0New = F0Curve[.newAxis, 0..., 0...].transposed(0, 2, 1)
     f0New = f0Upsample(f0New)
-    print("[KokoroDiag] generator f0New(upsampled)=\(f0New.shape)")
 
     var (harSource, _, _) = mSource(f0New)
-    let harSourceFlat = harSource.asArray(Float.self)
-    let harNonFinite = harSourceFlat.filter { !$0.isFinite }.count
-    print("[KokoroDiag] generator harSource=\(harSource.shape) nonFiniteCount=\(harNonFinite) min=\(harSourceFlat.min() ?? 0) max=\(harSourceFlat.max() ?? 0)")
 
     harSource = MLX.squeezed(harSource.transposed(0, 2, 1), axis: 1)
     let (harSpec, harPhase) = stft.transform(inputData: harSource)
-    print("[KokoroDiag] generator harSpec=\(harSpec.shape) harPhase=\(harPhase.shape)")
 
     var har = MLX.concatenated([harSpec, harPhase], axis: 1)
     har = MLX.swappedAxes(har, 2, 1)
@@ -173,7 +164,6 @@ class Generator {
       newX = MLX.swappedAxes(newX, 2, 1)
       newX = ups[i](newX, conv: MLX.convTransposed1d)
       newX = MLX.swappedAxes(newX, 2, 1)
-      print("[KokoroDiag] generator upsample[\(i)] newX=\(newX.shape) xSource=\(xSource.shape)")
 
       if i == numUpsamples - 1 {
         newX = reflectionPad(newX)
@@ -190,9 +180,6 @@ class Generator {
         }
       }
       newX = xs! / numKernels
-      let stageFlat = newX.asArray(Float.self)
-      let stageMeanAbs = stageFlat.isEmpty ? 0 : stageFlat.reduce(Float(0)) { $0 + abs($1) } / Float(stageFlat.count)
-      print("[KokoroDiag] generator resblockStage[\(i)] shape=\(newX.shape) min=\(stageFlat.min() ?? 0) max=\(stageFlat.max() ?? 0) meanAbs=\(stageMeanAbs)")
     }
 
     newX = LeakyReLU(negativeSlope: 0.01)(newX)
@@ -200,50 +187,14 @@ class Generator {
     newX = MLX.swappedAxes(newX, 2, 1)
     newX = convPost(newX, conv: MLX.conv1d)
     newX = MLX.swappedAxes(newX, 2, 1)
-    print("[KokoroDiag] generator postConv newX=\(newX.shape)")
 
-    // Correction: PR #814, previously cited here as "upstream-confirmed",
-    // was actually REJECTED and CLOSED by the mlx-audio maintainer, who
-    // called this exact -10/10 clamp "pretty arbitrary" -- it was never
-    // merged, and no equivalent clamp exists in current upstream. Kept
-    // here anyway, not as a correctness fix but as a defensive backstop:
-    // we directly observed (via the [KokoroDiag] final-samples print)
-    // this port producing raw output around -29...+33, wildly outside
-    // valid audio range, so *something* upstream of this is still wrong.
-    // Since Swift/MLX silently mis-broadcasts on shape mismatches instead
-    // of hard-crashing the way Python/NumPy would, this port can carry a
-    // corrupted intermediate value further than the Python reference ever
-    // could. The clamp only engages for pathological outliers and is a
-    // no-op for in-range audio, so it's safe to leave in place while the
-    // real root cause of the amplitude blowup is still being tracked down.
+    // Defensive clamp before exp(): keeps the reconstruction bounded if a
+    // future input ever pushes conv_post's raw output to an extreme value.
+    // A no-op for the normal, in-range case.
     let logMagnitude = MLX.clip(newX[0..., 0 ..< (postNFFt / 2 + 1), 0...], min: -10.0, max: 10.0)
     let spec = MLX.exp(logMagnitude)
     let phase = MLX.sin(newX[0..., (postNFFt / 2 + 1)..., 0...])
-    let specFlat = spec.asArray(Float.self)
-    print("[KokoroDiag] generator spec nonFiniteCount=\(specFlat.filter { !$0.isFinite }.count) min=\(specFlat.min() ?? 0) max=\(specFlat.max() ?? 0)")
 
-    let result = stft.inverse(magnitude: spec, phase: phase)
-    let resultFlat = result.asArray(Float.self)
-    print("[KokoroDiag] generator result=\(result.shape) nonFiniteCount=\(resultFlat.filter { !$0.isFinite }.count) min=\(resultFlat.min() ?? 0) max=\(resultFlat.max() ?? 0)")
-
-    // Is the extreme range confined to the edges (an ISTFT overlap-add
-    // edge/trim issue) or does it show up throughout (a more pervasive
-    // per-frame-boundary issue)? Sample a handful of windows across the
-    // signal to compare.
-    let n = resultFlat.count
-    let edgeTrim = min(200, n / 4)
-    if n > edgeTrim * 2 {
-      let middle = resultFlat[edgeTrim ..< (n - edgeTrim)]
-      print("[KokoroDiag] generator result excluding \(edgeTrim)-sample edges: min=\(middle.min() ?? 0) max=\(middle.max() ?? 0)")
-    }
-    let windowSize = max(1, n / 10)
-    for w in 0 ..< 10 {
-      let start = w * windowSize
-      let end = min(n, start + windowSize)
-      guard start < end else { continue }
-      let slice = resultFlat[start ..< end]
-      print("[KokoroDiag] generator result window[\(w)] range=[\(start),\(end)) min=\(slice.min() ?? 0) max=\(slice.max() ?? 0)")
-    }
-    return result
+    return stft.inverse(magnitude: spec, phase: phase)
   }
 }

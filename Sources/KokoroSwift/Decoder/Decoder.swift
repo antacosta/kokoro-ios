@@ -77,23 +77,17 @@ class Decoder {
     let NSwapped = MLX.swappedAxes(N.reshaped([N.shape[0], 1, N.shape[1]]), 2, 1)
     let NProcessed = MLX.swappedAxes(NConv(NSwapped, conv: MLX.conv1d), 2, 1)
 
-    Self.logRange("asr(input)", asr)
-    Self.logRange("F0(convOut)", F0)
-    Self.logRange("NProcessed(convOut)", NProcessed)
     var x = MLX.concatenated([asr, F0, NProcessed], axis: 1)
-    Self.logRange("preEncode(concat)", x)
     x = encode(x: x, s: s)
-    Self.logRange("encode", x)
 
     let asrResidual = MLX.swappedAxes(asrRes[0](MLX.swappedAxes(asr, 2, 1), conv: MLX.conv1d), 2, 1)
     var res = true
 
-    for (i, block) in decode.enumerated() {
+    for block in decode {
       if res {
         x = MLX.concatenated([x, asrResidual, F0, NProcessed], axis: 1)
       }
       x = block(x: x, s: s)
-      Self.logRange("decode[\(i)]", x)
 
       if block.upsampleType != "none" {
         res = false
@@ -101,11 +95,5 @@ class Decoder {
     }
 
     return generator(x, s, F0Curve)
-  }
-
-  private static func logRange(_ label: String, _ x: MLXArray) {
-    let flat = x.asArray(Float.self)
-    let meanAbs = flat.isEmpty ? 0 : flat.reduce(Float(0)) { $0 + abs($1) } / Float(flat.count)
-    print("[KokoroDiag] decoder \(label) shape=\(x.shape) min=\(flat.min() ?? 0) max=\(flat.max() ?? 0) meanAbs=\(meanAbs)")
   }
 }

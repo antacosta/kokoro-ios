@@ -28,37 +28,37 @@ public final class KokoroTTS {
     /// Thrown when input text exceeds maximum token count
     case tooManyTokens
   }
-  
+
   /// BERT model for encoding phoneme sequences
   private let bert: CustomAlbert!
-  
+
   /// Linear layer to project BERT embeddings
   private let bertEncoder: Linear!
-  
+
   /// Encoder for duration prediction features
   private let durationEncoder: DurationEncoder!
-  
+
   /// Bidirectional LSTM for duration prediction
   private let predictorLSTM: LSTM!
-  
+
   /// Projection layer for final duration values
   private let durationProj: Linear!
-  
+
   /// Predictor for prosodic features (F0, pitch)
   private let prosodyPredictor: ProsodyPredictor!
-  
+
   /// Text encoder that processes phoneme sequences
   private let textEncoder: TextEncoder!
-  
+
   /// Decoder that generates audio from encoded features
   private let decoder: Decoder!
-  
+
   /// Grapheme-to-phoneme processor for text conversion
   private let g2pProcessor: G2PProcessor?
-  
+
   /// Currently active language (cached to avoid reinitializing G2P)
   private var chosenLanguage: Language = .none
-  
+
   /// Initializes the Kokoro TTS engine with model weights and G2P processor.
   /// - Parameters:
   ///   - modelPath: URL to the directory containing model weights
@@ -67,7 +67,7 @@ public final class KokoroTTS {
     // Load and sanitize model weights
     let sanitizedWeights = WeightLoader.loadWeights(modelPath: modelPath)
     let config = KokoroConfig.loadConfig()
-    
+
     // Initialize BERT model for phoneme encoding
     bert = CustomAlbert(
       weights: sanitizedWeights,
@@ -79,13 +79,13 @@ public final class KokoroTTS {
         vocabSize: config.nToken
       )
     )
-    
+
     // Initialize BERT output encoder
     bertEncoder = Linear(
       weight: sanitizedWeights["bert_encoder.weight"]!,
       bias: sanitizedWeights["bert_encoder.bias"]!
     )
-    
+
     // Initialize duration prediction components
     durationEncoder = DurationEncoder(
       weights: sanitizedWeights,
@@ -147,57 +147,8 @@ public final class KokoroTTS {
 
     // Initialize G2P processor for text-to-phoneme conversion
     g2pProcessor = try? G2PFactory.createG2PProcessor(engine: g2p)
-
-    Self.runSTFTRoundTripSelfTest()
   }
 
-  /// TEMPORARY diagnostic: verifies MLXSTFT's transform -> inverse round
-  /// trip in isolation, on a known synthetic signal, completely independent
-  /// of the neural network. Generated audio has been observed with a
-  /// corrupted waveform shape (not just wrong scale -- peak-normalizing
-  /// didn't fix perceived quality), so this checks whether the hand-written
-  /// ISTFT reimplementation itself faithfully reconstructs a signal it
-  /// itself decomposed, before suspecting anything upstream (weights,
-  /// duration/F0 prediction, etc).
-  private static func runSTFTRoundTripSelfTest() {
-    let sampleRate: Float = 24000
-    let freq: Float = 220
-    let durationSeconds: Float = 0.5
-    let n = Int(sampleRate * durationSeconds)
-    let t = MLXArray(0 ..< n).asType(.float32) / sampleRate
-    let original = MLX.sin(2 * Float.pi * freq * t)
-
-    let stft = MLXSTFT(filterLength: 20, hopLength: 5, winLength: 20)
-    let (magnitude, phase) = stft.transform(inputData: original)
-    let reconstructed = stft.inverse(magnitude: magnitude, phase: phase)
-
-    let originalArr = original.asArray(Float.self)
-    let reconstructedArr = reconstructed.reshaped([-1]).asArray(Float.self)
-
-    print("[KokoroDiag] STFT self-test: original.count=\(originalArr.count) reconstructed.count=\(reconstructedArr.count)")
-    print("[KokoroDiag] STFT self-test: original first10=\(originalArr.prefix(10))")
-    print("[KokoroDiag] STFT self-test: reconstructed first10=\(reconstructedArr.prefix(10))")
-
-    let compareLen = min(originalArr.count, reconstructedArr.count)
-    guard compareLen > 0 else {
-      print("[KokoroDiag] STFT self-test: compareLen is 0, cannot compare")
-      return
-    }
-
-    var maxDiff: Float = 0
-    var sumSqDiff: Float = 0
-    var sumSqOrig: Float = 0
-    for i in 0 ..< compareLen {
-      let diff = abs(originalArr[i] - reconstructedArr[i])
-      maxDiff = max(maxDiff, diff)
-      sumSqDiff += diff * diff
-      sumSqOrig += originalArr[i] * originalArr[i]
-    }
-    let rmse = (sumSqDiff / Float(compareLen)).squareRoot()
-    let origRms = (sumSqOrig / Float(compareLen)).squareRoot()
-    print("[KokoroDiag] STFT self-test: compareLen=\(compareLen) maxDiff=\(maxDiff) rmse=\(rmse) origRms=\(origRms)")
-  }
-  
   /// Generates audio from text using the specified voice and parameters.
   ///
   /// This method performs the complete TTS pipeline:
@@ -224,17 +175,12 @@ public final class KokoroTTS {
 
     // Step 1: Convert text to phonemes
     let (phonemizedText, tokenArray) = try phonemizeText(text)
-    
+
     // Step 2: Tokenize and prepare input
     let (paddedInputIds, attentionMask, inputLengths, textMask, inputIds) = try prepareInputTensors(phonemizedText)
-    print("[KokoroDiag] step2 paddedInputIds=\(paddedInputIds.shape) inputIds.count=\(inputIds.count)")
 
     // Step 3: Extract style embeddings from voice
     let (globalStyle, acousticStyle) = extractStyleEmbeddings(from: voice, tokenCount: inputIds.count)
-    let gsFlat = globalStyle.asArray(Float.self)
-    let asFlat = acousticStyle.asArray(Float.self)
-    print("[KokoroDiag] step3 globalStyle=\(globalStyle.shape) min=\(gsFlat.min() ?? 0) max=\(gsFlat.max() ?? 0) first5=\(gsFlat.prefix(5))")
-    print("[KokoroDiag] step3 acousticStyle=\(acousticStyle.shape) min=\(asFlat.min() ?? 0) max=\(asFlat.max() ?? 0) first5=\(asFlat.prefix(5))")
 
     // Step 4: Encode text with BERT and predict duration
     let durationFeatures = encodeBERTAndDuration(
@@ -244,40 +190,25 @@ public final class KokoroTTS {
       textMask: textMask,
       style: globalStyle
     )
-    print("[KokoroDiag] step4 durationFeatures=\(durationFeatures.shape)")
 
     // Step 5: Predict phoneme durations
     let (predictedDurations, alignmentIndices) = predictDurations(
       features: durationFeatures,
       speed: speed
     )
-    print("[KokoroDiag] step5 predictedDurations=\(predictedDurations.shape) sum=\(predictedDurations.sum().item(Int32.self)) alignmentIndices=\(alignmentIndices.shape)")
 
     // Step 6: Generate aligned encodings
     let alignedEncoding = durationFeatures.transposed(0, 2, 1).take(alignmentIndices, axis: 2)
-    print("[KokoroDiag] step6 alignedEncoding=\(alignedEncoding.shape)")
 
     // Step 7: Predict prosody (F0, pitch)
     let (f0Prediction, nPrediction) = prosodyPredictor.F0NTrain(x: alignedEncoding, s: globalStyle)
-    let f0Flat = f0Prediction.asArray(Float.self)
-    let nFlat = nPrediction.asArray(Float.self)
-    print("[KokoroDiag] step7 f0Prediction=\(f0Prediction.shape) min=\(f0Flat.min() ?? 0) max=\(f0Flat.max() ?? 0) mean=\(f0Flat.reduce(0,+)/Float(max(f0Flat.count,1))) first10=\(f0Flat.prefix(10))")
-    print("[KokoroDiag] step7 nPrediction=\(nPrediction.shape) min=\(nFlat.min() ?? 0) max=\(nFlat.max() ?? 0) mean=\(nFlat.reduce(0,+)/Float(max(nFlat.count,1)))")
 
     // Step 8: Encode text for decoder
     let textEncoding = textEncoder(paddedInputIds, inputLengths: inputLengths, m: textMask)
-    let teFlat = textEncoding.asArray(Float.self)
-    print("[KokoroDiag] step8 textEncoding=\(textEncoding.shape) min=\(teFlat.min() ?? 0) max=\(teFlat.max() ?? 0)")
-    // Fixed: was `MLX.matmul(textEncoding, alignmentTarget)` against an
-    // explicit one-hot matrix -- verified via element-by-element diagnostic
-    // against the Python reference to silently produce values unrelated to
-    // any single selected phoneme column for this shape (batch=1, small
-    // contracting dim), despite the one-hot matrix itself being confirmed
-    // correct. A one-hot matmul is mathematically just a per-column gather,
-    // so `.take(_:axis:)` gives the identical, correct result directly.
+    // Expands phoneme-level features to frame-level via a per-frame gather
+    // (mathematically equivalent to, but avoids, multiplying by an explicit
+    // one-hot [phonemes x frames] matrix -- see createAlignmentIndices).
     let asrFeatures = textEncoding.take(alignmentIndices, axis: 2)
-    let asrFlat0 = asrFeatures.asArray(Float.self)
-    print("[KokoroDiag] step8 asrFeatures=\(asrFeatures.shape) min=\(asrFlat0.min() ?? 0) max=\(asrFlat0.max() ?? 0)")
 
     // Step 9: Generate audio
     let audio = decoder(
@@ -286,54 +217,46 @@ public final class KokoroTTS {
       N: nPrediction,
       s: acousticStyle
     )[0]
-    print("[KokoroDiag] step9 audio=\(audio.shape)")
-    
+
     // Try to predict timestamp of each token if G2P processor returns tokens
     if let tokenArray {
       TimestampPredictor.preditTimestamps(tokens: tokenArray, predictionDuration: predictedDurations)
     }
-    
+
     // Stop performance timing
     BenchmarkTimer.stopTimer(Constants.bm_TTS)
 
     let samples = audio[0].asArray(Float.self)
-    let nanCount = samples.filter { !$0.isFinite }.count
+
+    // Defensive headroom clamp: keeps playback safe from hard clipping if a
+    // future input ever produces an out-of-range peak. A no-op in the
+    // normal case where samples already fall within [-1, 1].
     let minVal = samples.min() ?? 0
     let maxVal = samples.max() ?? 0
-    let meanAbs = samples.isEmpty ? 0 : samples.reduce(Float(0)) { $0 + abs($1) } / Float(samples.count)
-    print("[KokoroDiag] final samples count=\(samples.count) nonFiniteCount=\(nanCount) min=\(minVal) max=\(maxVal) meanAbs=\(meanAbs) first10=\(samples.prefix(10))")
-
-    // TEMPORARY diagnostic/mitigation: final audio has been observed well
-    // outside valid PCM range (e.g. -29...+33), which alone causes hard
-    // clipping and could fully explain harsh/glitchy playback regardless
-    // of whether the underlying waveform shape is otherwise correct.
-    // Peak-normalize to a safe headroom so we can tell whether clipping
-    // was the dominant issue or whether the waveform itself is corrupted.
     let peak = max(abs(minVal), abs(maxVal))
     let normalizedSamples: [Float]
     if peak > 1.0 {
       let scale = 0.9 / peak
       normalizedSamples = samples.map { $0 * scale }
-      print("[KokoroDiag] peak-normalized by scale=\(scale) (peak was \(peak))")
     } else {
       normalizedSamples = samples
     }
 
     return (normalizedSamples, tokenArray)
   }
-  
+
   /// Updates the G2P language if it differs from the current language.
   private func updateLanguageIfNeeded(_ language: Language) throws {
     guard chosenLanguage != language else { return }
-    
+
     guard let g2pProcessor else {
       throw G2PProcessorError.processorNotInitialized
     }
-    
+
     try g2pProcessor.setLanguage(language)
     chosenLanguage = language
   }
-  
+
   /// Converts input text to phonemes using the G2P processor.
   private func phonemizeText(_ text: String) throws -> (String, [MToken]?) {
     let phonemizedOutput = try g2pProcessor?.process(input: text)
@@ -342,7 +265,7 @@ public final class KokoroTTS {
     }
     return phonemizedOutput
   }
-  
+
   /// Prepares input tensors for the model from phonemized text.
   /// - Returns: Tuple containing:
   ///   - paddedInputIds: Tokenized and padded input sequence
@@ -353,7 +276,7 @@ public final class KokoroTTS {
   private func prepareInputTensors(_ phonemizedText: String) throws -> (MLXArray, MLXArray, MLXArray, MLXArray, [Int]) {
     // Tokenize phonemized text
     let inputIds = Tokenizer.tokenize(phonemizedText: phonemizedText)
-    
+
     // Check token count limit
     guard inputIds.count <= Constants.maxTokenCount else {
       throw KokoroTTSError.tooManyTokens
@@ -366,12 +289,12 @@ public final class KokoroTTS {
     // Create input length tensor
     let inputLengths = MLXArray(paddedInputIds.dim(-1))
     let inputLengthMax: Int = inputLengths.max().item()
-    
+
     // Create text mask for padding positions
     var textMask = MLXArray(0 ..< inputLengthMax)
     textMask = textMask + 1 .> inputLengths
     textMask = textMask.expandedDimensions(axes: [0])
-    
+
     // Create attention mask (1 for valid positions, 0 for padding)
     let swiftTextMask: [Bool] = textMask.asArray(Bool.self)
     let swiftTextMaskInt = swiftTextMask.map { !$0 ? 1 : 0 }
@@ -379,7 +302,7 @@ public final class KokoroTTS {
 
     return (paddedInputIds, attentionMask, inputLengths, textMask, inputIds)
   }
-  
+
   /// Extracts style embeddings from the voice array.
   /// - Parameters:
   ///   - voice: Voice embedding array
@@ -390,14 +313,14 @@ public final class KokoroTTS {
   private func extractStyleEmbeddings(from voice: MLXArray, tokenCount: Int) -> (MLXArray, MLXArray) {
     // Extract reference style from voice embedding
     let referenceStyle = voice[tokenCount - 1, 0 ... 1, 0...]
-    
+
     // Split into global style (for prosody/duration) and acoustic style
     let globalStyle = referenceStyle[0 ... 1, 128...]
     let acousticStyle = referenceStyle[0 ... 1, 0 ... 127]
-    
+
     return (globalStyle, acousticStyle)
   }
-  
+
   /// Encodes text with BERT and generates duration prediction features.
   private func encodeBERTAndDuration(
     inputIds: MLXArray,
@@ -408,10 +331,10 @@ public final class KokoroTTS {
   ) -> MLXArray {
     // Pass through BERT model
     let (bertOutput, _) = bert(inputIds, attentionMask: attentionMask)
-    
+
     // Project BERT output and transpose for duration encoder
     let bertEncoded = bertEncoder(bertOutput).transposed(0, 2, 1)
-    
+
     // Generate duration features with style conditioning
     let durationFeatures = durationEncoder(
       bertEncoded,
@@ -419,10 +342,10 @@ public final class KokoroTTS {
       textLengths: inputLengths,
       m: textMask
     )
-    
+
     return durationFeatures
   }
-  
+
   /// Predicts phoneme durations and creates the per-frame alignment index array.
   /// - Parameters:
   ///   - features: Duration prediction features from encoder
@@ -431,10 +354,10 @@ public final class KokoroTTS {
   private func predictDurations(features: MLXArray, speed: Float) -> (MLXArray, MLXArray) {
     // Pass through LSTM
     let (lstmOutput, _) = predictorLSTM(features)
-    
+
     // Project to duration values
     let durationLogits = durationProj(lstmOutput)
-    
+
     // Convert to actual durations. A sum of `max_dur` (config.json, 50)
     // sigmoid outputs is mathematically bounded to [0, 50] per phoneme for
     // well-formed input, but if some upstream computation produces NaN/Inf
@@ -442,7 +365,7 @@ public final class KokoroTTS {
     // stack), sigmoid(NaN) is NaN, and casting a non-finite float to Int32
     // is undefined behavior that can yield a huge garbage value. That
     // garbage value then sizes every downstream tensor (the alignment
-    // matrix, decoder, final audio), producing a single allocation of
+    // array, decoder, final audio), producing a single allocation of
     // several gigabytes that hard-crashes in Metal before Swift ever gets
     // a chance to catch anything. Replace non-finite values with a safe
     // fallback before rounding, then clamp to the model's own valid
@@ -459,7 +382,7 @@ public final class KokoroTTS {
     // dependent over-prediction, not NaN/Inf, so the per-phoneme clamp
     // above never catches it (each individual value is still <= 50).
     // That inflated total drags every downstream decoder buffer along
-    // with it (alignment matrix, iSTFT/upsample stages), which is what
+    // with it (alignment array, iSTFT/upsample stages), which is what
     // blows past Metal's 4GB single-buffer limit and overall process
     // memory. Rescale the whole array down proportionally (preserving
     // relative phoneme emphasis, unlike a hard per-phoneme cap) if the
@@ -469,7 +392,6 @@ public final class KokoroTTS {
     let maxAvgFramesPerPhoneme: Int32 = 5
     let maxTotalFrames = Int32(phonemeCount) * maxAvgFramesPerPhoneme
     if totalFrames > maxTotalFrames {
-      print("[KokoroDiag] duration backstop triggered: phonemeCount=\(phonemeCount) totalFrames=\(totalFrames) -> \(maxTotalFrames)")
       let scale = Float(maxTotalFrames) / Float(totalFrames)
       predictedDurations = MLX.clip((predictedDurations.asType(.float32) * scale).round(), min: 1, max: 50).asType(.int32)
     }
@@ -477,44 +399,34 @@ public final class KokoroTTS {
     // Create per-frame phoneme-index array
     return (predictedDurations, createAlignmentIndices(durations: predictedDurations))
   }
-  
+
   /// Creates a per-frame phoneme-index array from predicted durations: each
-  /// frame's entry is the index of the phoneme it belongs to.
-  ///
-  /// Correctness note: this used to build an explicit one-hot [phonemes x
-  /// frames] matrix and multiply it through `matmul` to expand phoneme-level
-  /// features to frame-level ones. That matmul was verified (via a direct
-  /// element-by-element diagnostic comparison against the Python mlx-audio
-  /// reference for identical input) to silently return values with no
-  /// relationship to any single selected phoneme column, despite the
-  /// alignment matrix itself being confirmed strictly one-hot -- i.e. a
-  /// real correctness bug in this specific matmul dispatch (batch=1,
-  /// contracting dim in the tens), not in the alignment construction. Since
-  /// multiplying by a one-hot matrix is mathematically just a per-column
-  /// gather, replacing the matmul with an explicit `.take(_:axis:)` gather
-  /// produces the identical result without ever exercising the broken path.
+  /// frame's entry is the index of the phoneme it belongs to. Expanding
+  /// phoneme-level features to frame-level ones is then a direct
+  /// `.take(_:axis:)` gather using this array, equivalent to multiplying by
+  /// an explicit one-hot [phonemes x frames] matrix but without ever
+  /// constructing one.
   /// - Parameters:
   ///   - durations: Predicted duration for each phoneme
   /// - Returns: Int32 index array of length totalFrames
   private func createAlignmentIndices(durations: MLXArray) -> MLXArray {
     // Create indices array by repeating each index according to its duration
-    let indices = MLX.concatenated(
+    return MLX.concatenated(
       durations.enumerated().map { index, duration in
         let frameCount: Int = duration.item()
         return MLX.repeated(MLXArray([index]), count: frameCount)
       }
     )
-    return indices
   }
-  
+
   /// Constants used throughout the TTS engine.
   public struct Constants {
     /// Maximum number of tokens allowed in input
     public static let maxTokenCount = 510
-    
+
     /// Audio sampling rate in Hz
     public static let samplingRate = 24000
-    
+
     // Benchmark timer identifiers
     public static let bm_TTS = "TTSAudio"
     static let bm_Phonemize = "Phonemize"
