@@ -239,7 +239,23 @@ public final class KokoroTTS {
     let meanAbs = samples.isEmpty ? 0 : samples.reduce(Float(0)) { $0 + abs($1) } / Float(samples.count)
     print("[KokoroDiag] final samples count=\(samples.count) nonFiniteCount=\(nanCount) min=\(minVal) max=\(maxVal) meanAbs=\(meanAbs) first10=\(samples.prefix(10))")
 
-    return (samples, tokenArray)
+    // TEMPORARY diagnostic/mitigation: final audio has been observed well
+    // outside valid PCM range (e.g. -29...+33), which alone causes hard
+    // clipping and could fully explain harsh/glitchy playback regardless
+    // of whether the underlying waveform shape is otherwise correct.
+    // Peak-normalize to a safe headroom so we can tell whether clipping
+    // was the dominant issue or whether the waveform itself is corrupted.
+    let peak = max(abs(minVal), abs(maxVal))
+    let normalizedSamples: [Float]
+    if peak > 1.0 {
+      let scale = 0.9 / peak
+      normalizedSamples = samples.map { $0 * scale }
+      print("[KokoroDiag] peak-normalized by scale=\(scale) (peak was \(peak))")
+    } else {
+      normalizedSamples = samples
+    }
+
+    return (normalizedSamples, tokenArray)
   }
   
   /// Updates the G2P language if it differs from the current language.
