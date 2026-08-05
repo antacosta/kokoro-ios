@@ -51,13 +51,20 @@ class SineGen {
       scaleFactor: [1 / Float(upsampleScale)],
       mode: "linear"
     ).transposed(0, 2, 1)
+    let radFlat = radValues.asArray(Float.self)
+    print("[KokoroDiag] SineGen radValues(downsampled) count=\(radFlat.count) min=\(radFlat.min() ?? 0) max=\(radFlat.max() ?? 0) first5=\(radFlat.prefix(5)) last5=\(radFlat.suffix(5))")
 
     var phase = MLX.cumsum(radValues, axis: 1) * 2 * Float.pi
+    let phaseBeforeFlat = phase.asArray(Float.self)
+    print("[KokoroDiag] SineGen phase(before upsample) min=\(phaseBeforeFlat.min() ?? 0) max=\(phaseBeforeFlat.max() ?? 0) first5=\(phaseBeforeFlat.prefix(5))")
+
     phase = interpolate(
       input: phase.transposed(0, 2, 1) * Float(upsampleScale),
       scaleFactor: [Float(upsampleScale)],
       mode: "linear"
     ).transposed(0, 2, 1)
+    let phaseAfterFlat = phase.asArray(Float.self)
+    print("[KokoroDiag] SineGen phase(after upsample) count=\(phaseAfterFlat.count) min=\(phaseAfterFlat.min() ?? 0) max=\(phaseAfterFlat.max() ?? 0) first10=\(phaseAfterFlat.prefix(10)) last10=\(phaseAfterFlat.suffix(10))")
 
     return MLX.sin(phase)
   }

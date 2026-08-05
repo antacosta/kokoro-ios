@@ -94,9 +94,20 @@ func interpolate1d(
     return MLX.broadcast(input, to: outputShape)
   }
 
-  let xLow = MLX.floor(x).asType(.int32)
+  // xHigh was already clamped to the valid range, but xLow was not -- with
+  // the align_corners=false half-pixel formula above (x = x*scale + 0.5*
+  // scale - 0.5), upsampling by a large factor makes the first output
+  // sample's x go slightly negative (e.g. -0.5), so floor(x) = -1. Used
+  // directly as a fancy-index into `input`, a negative index silently
+  // wraps around to the array's last element (NumPy/Python-style negative
+  // indexing) instead of clamping to the start -- injecting a wraparound
+  // discontinuity right where SineGen's phase cumsum begins, which then
+  // propagates through the entire cumulative sum. Clamping xLow the same
+  // way xHigh already is fixes this.
+  let xLowRaw = MLX.floor(x).asType(.int32)
+  let xLow = MLX.clip(xLowRaw, min: 0, max: inputWidth - 1)
   let xHigh = MLX.minimum(xLow + 1, MLXArray(inputWidth - 1, dtype: .int32))
-  let xFrac = x - xLow.asType(.float32)
+  let xFrac = x - xLowRaw.asType(.float32)
 
   let yLow = input[0..., 0..., xLow]
   let yHigh = input[0..., 0..., xHigh]
