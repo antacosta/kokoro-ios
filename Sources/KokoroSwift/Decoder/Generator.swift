@@ -199,7 +199,18 @@ class Generator {
     newX = MLX.swappedAxes(newX, 2, 1)
     print("[KokoroDiag] generator postConv newX=\(newX.shape)")
 
-    let spec = MLX.exp(newX[0..., 0 ..< (postNFFt / 2 + 1), 0...])
+    // Upstream-confirmed bug (Blaizzy/mlx-audio #815, fixed in PR #814):
+    // convPost's raw output can reach magnitudes around ~1e11 for some
+    // inputs. Exponentiating that directly overflows float32 to inf,
+    // which then propagates as NaN through the iSTFT reconstruction --
+    // and even short of literal overflow, an unclamped, occasionally
+    // very large log-magnitude drives the reconstructed waveform's
+    // amplitude far outside any normal audio range, producing harsh,
+    // distorted output. Clamping the log-magnitude to [-10, 10] before
+    // exp() (matching common TTS spectrogram processing practice, and
+    // the exact bound used in the upstream fix) keeps this bounded.
+    let logMagnitude = MLX.clip(newX[0..., 0 ..< (postNFFt / 2 + 1), 0...], min: -10.0, max: 10.0)
+    let spec = MLX.exp(logMagnitude)
     let phase = MLX.sin(newX[0..., (postNFFt / 2 + 1)..., 0...])
     let specFlat = spec.asArray(Float.self)
     print("[KokoroDiag] generator spec nonFiniteCount=\(specFlat.filter { !$0.isFinite }.count) min=\(specFlat.min() ?? 0) max=\(specFlat.max() ?? 0)")
