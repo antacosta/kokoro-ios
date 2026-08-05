@@ -364,8 +364,30 @@ public final class KokoroTTS {
     // minimum was clamped).
     let rawDurationSigmoid = MLX.sigmoid(durationLogits).sum(axis: -1) / speed
     let durationSigmoid = MLX.nanToNum(rawDurationSigmoid, nan: 1, posInf: 50, negInf: 1)
-    let predictedDurations = MLX.clip(durationSigmoid.round(), min: 1, max: 50).asType(.int32)[0]
-    
+    var predictedDurations = MLX.clip(durationSigmoid.round(), min: 1, max: 50).asType(.int32)[0]
+
+    // Backstop beyond the per-phoneme clamp above: observed in practice,
+    // one chunk predicted a *sum* of 4995 frames across 227 phonemes
+    // (~22 frames/phoneme) while every similarly-sized chunk landed at
+    // 85-335 total (~1.4-2.5 frames/phoneme) — a real, finite, data-
+    // dependent over-prediction, not NaN/Inf, so the per-phoneme clamp
+    // above never catches it (each individual value is still <= 50).
+    // That inflated total drags every downstream decoder buffer along
+    // with it (alignment matrix, iSTFT/upsample stages), which is what
+    // blows past Metal's 4GB single-buffer limit and overall process
+    // memory. Rescale the whole array down proportionally (preserving
+    // relative phoneme emphasis, unlike a hard per-phoneme cap) if the
+    // average exceeds a ceiling well above every normal chunk observed.
+    let phonemeCount = predictedDurations.shape[0]
+    let totalFrames: Int32 = predictedDurations.sum().item()
+    let maxAvgFramesPerPhoneme: Int32 = 5
+    let maxTotalFrames = Int32(phonemeCount) * maxAvgFramesPerPhoneme
+    if totalFrames > maxTotalFrames {
+      print("[KokoroDiag] duration backstop triggered: phonemeCount=\(phonemeCount) totalFrames=\(totalFrames) -> \(maxTotalFrames)")
+      let scale = Float(maxTotalFrames) / Float(totalFrames)
+      predictedDurations = MLX.clip((predictedDurations.asType(.float32) * scale).round(), min: 1, max: 50).asType(.int32)
+    }
+
     // Create alignment matrix
     return (predictedDurations, createAlignmentTarget(durations: predictedDurations, batchSize: batchSize))
   }
