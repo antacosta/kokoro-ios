@@ -292,6 +292,24 @@ public final class KokoroTTS {
       let asrCol = asrFeatures[0..., 0..., 0].asArray(Float.self)
       let maxDiff = zip(teCol, asrCol).map { abs($0 - $1) }.max() ?? -1
       print("[KokoroDiag] step8 frame0 selectedPhoneme=\(selectedPhoneme) maxDiffVsTextEncodingCol=\(maxDiff)")
+      print("[KokoroDiag] step8 teCol(phoneme\(selectedPhoneme)) first8=\(teCol.prefix(8))")
+      print("[KokoroDiag] step8 asrCol(frame0) first8=\(asrCol.prefix(8))")
+
+      // Does asrCol's frame-0 column actually match a DIFFERENT phoneme's
+      // textEncoding column exactly (an index-mapping bug), or does it
+      // not match ANY single column (a deeper computation bug)?
+      let numPhonemes = textEncoding.shape[2]
+      var bestIndex = -1
+      var bestDiff = Float.greatestFiniteMagnitude
+      for p in 0 ..< numPhonemes {
+        let col = textEncoding[0..., 0..., p].asArray(Float.self)
+        let diff = zip(col, asrCol).map { abs($0 - $1) }.max() ?? .greatestFiniteMagnitude
+        if diff < bestDiff {
+          bestDiff = diff
+          bestIndex = p
+        }
+      }
+      print("[KokoroDiag] step8 asrCol(frame0) best-matching phoneme index=\(bestIndex) diff=\(bestDiff) (expected index \(selectedPhoneme))")
     } else {
       print("[KokoroDiag] step8 frame0 has NO selected phoneme (column sum 0)")
     }
