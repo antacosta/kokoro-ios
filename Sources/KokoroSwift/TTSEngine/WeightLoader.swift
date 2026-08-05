@@ -88,13 +88,23 @@ final class WeightLoader {
           
         // Weight normalization V parameters need conditional transposition
         } else if key.contains("weight_v") {
+          let willTranspose = !checkArrayShape(arr: value)
+          if key.contains("ups.") || key.contains("conv_post") {
+            print("[KokoroDiag] weight_v key=\(key) originalShape=\(value.shape) willTranspose=\(willTranspose)")
+          }
           if checkArrayShape(arr: value) {
             sanitizedWeights[key] = value
           } else {
             sanitizedWeights[key] = value.transposed(0, 2, 1)
           }
+          if key.contains("ups.") || key.contains("conv_post") {
+            print("[KokoroDiag] weight_v key=\(key) finalShape=\(sanitizedWeights[key]!.shape)")
+          }
         } else {
           sanitizedWeights[key] = value
+          if key.contains("weight_g"), key.contains("ups.") || key.contains("conv_post") {
+            print("[KokoroDiag] weight_g key=\(key) shape=\(value.shape)")
+          }
         }
       }
     }
