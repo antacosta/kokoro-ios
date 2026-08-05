@@ -206,6 +206,25 @@ class Generator {
     let result = stft.inverse(magnitude: spec, phase: phase)
     let resultFlat = result.asArray(Float.self)
     print("[KokoroDiag] generator result=\(result.shape) nonFiniteCount=\(resultFlat.filter { !$0.isFinite }.count) min=\(resultFlat.min() ?? 0) max=\(resultFlat.max() ?? 0)")
+
+    // Is the extreme range confined to the edges (an ISTFT overlap-add
+    // edge/trim issue) or does it show up throughout (a more pervasive
+    // per-frame-boundary issue)? Sample a handful of windows across the
+    // signal to compare.
+    let n = resultFlat.count
+    let edgeTrim = min(200, n / 4)
+    if n > edgeTrim * 2 {
+      let middle = resultFlat[edgeTrim ..< (n - edgeTrim)]
+      print("[KokoroDiag] generator result excluding \(edgeTrim)-sample edges: min=\(middle.min() ?? 0) max=\(middle.max() ?? 0)")
+    }
+    let windowSize = max(1, n / 10)
+    for w in 0 ..< 10 {
+      let start = w * windowSize
+      let end = min(n, start + windowSize)
+      guard start < end else { continue }
+      let slice = resultFlat[start ..< end]
+      print("[KokoroDiag] generator result window[\(w)] range=[\(start),\(end)) min=\(slice.min() ?? 0) max=\(slice.max() ?? 0)")
+    }
     return result
   }
 }
