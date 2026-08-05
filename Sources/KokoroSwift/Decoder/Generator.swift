@@ -145,17 +145,21 @@ class Generator {
   }
 
   func callAsFunction(_ x: MLXArray, _ s: MLXArray, _ F0Curve: MLXArray) -> MLXArray {
+    print("[KokoroDiag] generator x=\(x.shape) F0Curve=\(F0Curve.shape)")
     var f0New = F0Curve[.newAxis, 0..., 0...].transposed(0, 2, 1)
     f0New = f0Upsample(f0New)
+    print("[KokoroDiag] generator f0New(upsampled)=\(f0New.shape)")
 
     var (harSource, _, _) = mSource(f0New)
+    print("[KokoroDiag] generator harSource=\(harSource.shape)")
 
     harSource = MLX.squeezed(harSource.transposed(0, 2, 1), axis: 1)
     let (harSpec, harPhase) = stft.transform(inputData: harSource)
-    
+    print("[KokoroDiag] generator harSpec=\(harSpec.shape) harPhase=\(harPhase.shape)")
+
     var har = MLX.concatenated([harSpec, harPhase], axis: 1)
     har = MLX.swappedAxes(har, 2, 1)
-        
+
     var newX = x
     for i in 0 ..< numUpsamples {
       newX = LeakyReLU(negativeSlope: 0.1)(newX)
@@ -166,12 +170,13 @@ class Generator {
       newX = MLX.swappedAxes(newX, 2, 1)
       newX = ups[i](newX, conv: MLX.convTransposed1d)
       newX = MLX.swappedAxes(newX, 2, 1)
+      print("[KokoroDiag] generator upsample[\(i)] newX=\(newX.shape) xSource=\(xSource.shape)")
 
       if i == numUpsamples - 1 {
         newX = reflectionPad(newX)
       }
       newX = newX + xSource
-      
+
       var xs: MLXArray?
       for j in 0 ..< numKernels {
         if xs == nil {
@@ -183,17 +188,19 @@ class Generator {
       }
       newX = xs! / numKernels
     }
-    
+
     newX = LeakyReLU(negativeSlope: 0.01)(newX)
 
     newX = MLX.swappedAxes(newX, 2, 1)
     newX = convPost(newX, conv: MLX.conv1d)
     newX = MLX.swappedAxes(newX, 2, 1)
-    
+    print("[KokoroDiag] generator postConv newX=\(newX.shape)")
+
     let spec = MLX.exp(newX[0..., 0 ..< (postNFFt / 2 + 1), 0...])
     let phase = MLX.sin(newX[0..., (postNFFt / 2 + 1)..., 0...])
 
     let result = stft.inverse(magnitude: spec, phase: phase)
+    print("[KokoroDiag] generator result=\(result.shape)")
     return result
   }
 }

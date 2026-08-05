@@ -178,10 +178,12 @@ public final class KokoroTTS {
     
     // Step 2: Tokenize and prepare input
     let (paddedInputIds, attentionMask, inputLengths, textMask, inputIds) = try prepareInputTensors(phonemizedText)
-    
+    print("[KokoroDiag] step2 paddedInputIds=\(paddedInputIds.shape) inputIds.count=\(inputIds.count)")
+
     // Step 3: Extract style embeddings from voice
     let (globalStyle, acousticStyle) = extractStyleEmbeddings(from: voice, tokenCount: inputIds.count)
-    
+    print("[KokoroDiag] step3 globalStyle=\(globalStyle.shape) acousticStyle=\(acousticStyle.shape)")
+
     // Step 4: Encode text with BERT and predict duration
     let durationFeatures = encodeBERTAndDuration(
       inputIds: paddedInputIds,
@@ -190,24 +192,29 @@ public final class KokoroTTS {
       textMask: textMask,
       style: globalStyle
     )
-    
+    print("[KokoroDiag] step4 durationFeatures=\(durationFeatures.shape)")
+
     // Step 5: Predict phoneme durations
     let (predictedDurations, alignmentTarget) = predictDurations(
       features: durationFeatures,
       batchSize: paddedInputIds.shape[1],
       speed: speed
     )
-    
+    print("[KokoroDiag] step5 predictedDurations=\(predictedDurations.shape) sum=\(predictedDurations.sum().item(Int32.self)) alignmentTarget=\(alignmentTarget.shape)")
+
     // Step 6: Generate aligned encodings
     let alignedEncoding = durationFeatures.transposed(0, 2, 1).matmul(alignmentTarget)
-    
+    print("[KokoroDiag] step6 alignedEncoding=\(alignedEncoding.shape)")
+
     // Step 7: Predict prosody (F0, pitch)
     let (f0Prediction, nPrediction) = prosodyPredictor.F0NTrain(x: alignedEncoding, s: globalStyle)
-    
+    print("[KokoroDiag] step7 f0Prediction=\(f0Prediction.shape) nPrediction=\(nPrediction.shape)")
+
     // Step 8: Encode text for decoder
     let textEncoding = textEncoder(paddedInputIds, inputLengths: inputLengths, m: textMask)
     let asrFeatures = MLX.matmul(textEncoding, alignmentTarget)
-    
+    print("[KokoroDiag] step8 textEncoding=\(textEncoding.shape) asrFeatures=\(asrFeatures.shape)")
+
     // Step 9: Generate audio
     let audio = decoder(
       asr: asrFeatures,
@@ -215,6 +222,7 @@ public final class KokoroTTS {
       N: nPrediction,
       s: acousticStyle
     )[0]
+    print("[KokoroDiag] step9 audio=\(audio.shape)")
     
     // Try to predict timestamp of each token if G2P processor returns tokens
     if let tokenArray {
