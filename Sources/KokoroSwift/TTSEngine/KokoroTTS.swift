@@ -247,15 +247,14 @@ public final class KokoroTTS {
     print("[KokoroDiag] step4 durationFeatures=\(durationFeatures.shape)")
 
     // Step 5: Predict phoneme durations
-    let (predictedDurations, alignmentTarget) = predictDurations(
+    let (predictedDurations, alignmentIndices) = predictDurations(
       features: durationFeatures,
-      batchSize: paddedInputIds.shape[1],
       speed: speed
     )
-    print("[KokoroDiag] step5 predictedDurations=\(predictedDurations.shape) sum=\(predictedDurations.sum().item(Int32.self)) alignmentTarget=\(alignmentTarget.shape)")
+    print("[KokoroDiag] step5 predictedDurations=\(predictedDurations.shape) sum=\(predictedDurations.sum().item(Int32.self)) alignmentIndices=\(alignmentIndices.shape)")
 
     // Step 6: Generate aligned encodings
-    let alignedEncoding = durationFeatures.transposed(0, 2, 1).matmul(alignmentTarget)
+    let alignedEncoding = durationFeatures.transposed(0, 2, 1).take(alignmentIndices, axis: 2)
     print("[KokoroDiag] step6 alignedEncoding=\(alignedEncoding.shape)")
 
     // Step 7: Predict prosody (F0, pitch)
@@ -269,50 +268,16 @@ public final class KokoroTTS {
     let textEncoding = textEncoder(paddedInputIds, inputLengths: inputLengths, m: textMask)
     let teFlat = textEncoding.asArray(Float.self)
     print("[KokoroDiag] step8 textEncoding=\(textEncoding.shape) min=\(teFlat.min() ?? 0) max=\(teFlat.max() ?? 0)")
-    let colSums = alignmentTarget.sum(axis: 1)
-    let colSumsFlat = colSums.asArray(Float.self)
-    let atFlat = alignmentTarget.asArray(Float.self)
-    let onesCount = atFlat.filter { $0 == 1.0 }.count
-    let nonBinaryCount = atFlat.filter { $0 != 0.0 && $0 != 1.0 }.count
-    print("[KokoroDiag] step8 alignmentTarget=\(alignmentTarget.shape) colSum min=\(colSumsFlat.min() ?? 0) max=\(colSumsFlat.max() ?? 0) onesCount=\(onesCount) nonBinaryCount=\(nonBinaryCount) totalFrames=\(alignmentTarget.shape[2])")
-    let asrFeatures = MLX.matmul(textEncoding, alignmentTarget)
+    // Fixed: was `MLX.matmul(textEncoding, alignmentTarget)` against an
+    // explicit one-hot matrix -- verified via element-by-element diagnostic
+    // against the Python reference to silently produce values unrelated to
+    // any single selected phoneme column for this shape (batch=1, small
+    // contracting dim), despite the one-hot matrix itself being confirmed
+    // correct. A one-hot matmul is mathematically just a per-column gather,
+    // so `.take(_:axis:)` gives the identical, correct result directly.
+    let asrFeatures = textEncoding.take(alignmentIndices, axis: 2)
     let asrFlat0 = asrFeatures.asArray(Float.self)
     print("[KokoroDiag] step8 asrFeatures=\(asrFeatures.shape) min=\(asrFlat0.min() ?? 0) max=\(asrFlat0.max() ?? 0)")
-
-    // Direct selection-equality check: for frame 0, find which phoneme
-    // column the alignment matrix selects, then verify asrFeatures[:,:,0]
-    // exactly equals textEncoding[:,:,thatPhoneme]. If the alignment
-    // matrix is truly one-hot, these must match exactly (a copy, not a
-    // blend), and asrFeatures can then never exceed textEncoding's range.
-    let alignmentTargetSqueezed = alignmentTarget.squeezed(axis: 0)
-    let frame0Column = alignmentTargetSqueezed[0..., 0]
-    let frame0Flat = frame0Column.asArray(Float.self)
-    if let selectedPhoneme = frame0Flat.firstIndex(where: { $0 == 1.0 }) {
-      let teCol = textEncoding[0..., 0..., selectedPhoneme].asArray(Float.self)
-      let asrCol = asrFeatures[0..., 0..., 0].asArray(Float.self)
-      let maxDiff = zip(teCol, asrCol).map { abs($0 - $1) }.max() ?? -1
-      print("[KokoroDiag] step8 frame0 selectedPhoneme=\(selectedPhoneme) maxDiffVsTextEncodingCol=\(maxDiff)")
-      print("[KokoroDiag] step8 teCol(phoneme\(selectedPhoneme)) first8=\(teCol.prefix(8))")
-      print("[KokoroDiag] step8 asrCol(frame0) first8=\(asrCol.prefix(8))")
-
-      // Does asrCol's frame-0 column actually match a DIFFERENT phoneme's
-      // textEncoding column exactly (an index-mapping bug), or does it
-      // not match ANY single column (a deeper computation bug)?
-      let numPhonemes = textEncoding.shape[2]
-      var bestIndex = -1
-      var bestDiff = Float.greatestFiniteMagnitude
-      for p in 0 ..< numPhonemes {
-        let col = textEncoding[0..., 0..., p].asArray(Float.self)
-        let diff = zip(col, asrCol).map { abs($0 - $1) }.max() ?? .greatestFiniteMagnitude
-        if diff < bestDiff {
-          bestDiff = diff
-          bestIndex = p
-        }
-      }
-      print("[KokoroDiag] step8 asrCol(frame0) best-matching phoneme index=\(bestIndex) diff=\(bestDiff) (expected index \(selectedPhoneme))")
-    } else {
-      print("[KokoroDiag] step8 frame0 has NO selected phoneme (column sum 0)")
-    }
 
     // Step 9: Generate audio
     let audio = decoder(
@@ -458,13 +423,12 @@ public final class KokoroTTS {
     return durationFeatures
   }
   
-  /// Predicts phoneme durations and creates alignment target matrix.
+  /// Predicts phoneme durations and creates the per-frame alignment index array.
   /// - Parameters:
   ///   - features: Duration prediction features from encoder
-  ///   - batchSize: Size of the input batch
   ///   - speed: Speech speed multiplier
-  /// - Returns: Predicted durations and alignment target matrix for duration expansion
-  private func predictDurations(features: MLXArray, batchSize: Int, speed: Float) -> (MLXArray, MLXArray) {
+  /// - Returns: Predicted durations and per-frame phoneme-index array for duration expansion
+  private func predictDurations(features: MLXArray, speed: Float) -> (MLXArray, MLXArray) {
     // Pass through LSTM
     let (lstmOutput, _) = predictorLSTM(features)
     
@@ -510,17 +474,29 @@ public final class KokoroTTS {
       predictedDurations = MLX.clip((predictedDurations.asType(.float32) * scale).round(), min: 1, max: 50).asType(.int32)
     }
 
-    // Create alignment matrix
-    return (predictedDurations, createAlignmentTarget(durations: predictedDurations, batchSize: batchSize))
+    // Create per-frame phoneme-index array
+    return (predictedDurations, createAlignmentIndices(durations: predictedDurations))
   }
   
-  /// Creates an alignment target matrix from predicted durations. Maps each phoneme to multiple frames based on duration.
-  /// Each row corresponds to a phoneme, and columns represent frames.
+  /// Creates a per-frame phoneme-index array from predicted durations: each
+  /// frame's entry is the index of the phoneme it belongs to.
+  ///
+  /// Correctness note: this used to build an explicit one-hot [phonemes x
+  /// frames] matrix and multiply it through `matmul` to expand phoneme-level
+  /// features to frame-level ones. That matmul was verified (via a direct
+  /// element-by-element diagnostic comparison against the Python mlx-audio
+  /// reference for identical input) to silently return values with no
+  /// relationship to any single selected phoneme column, despite the
+  /// alignment matrix itself being confirmed strictly one-hot -- i.e. a
+  /// real correctness bug in this specific matmul dispatch (batch=1,
+  /// contracting dim in the tens), not in the alignment construction. Since
+  /// multiplying by a one-hot matrix is mathematically just a per-column
+  /// gather, replacing the matmul with an explicit `.take(_:axis:)` gather
+  /// produces the identical result without ever exercising the broken path.
   /// - Parameters:
   ///   - durations: Predicted duration for each phoneme
-  ///   - batchSize: Size of the input batch
-  /// - Returns: Alignment matrix [batchSize × totalFrames]
-  private func createAlignmentTarget(durations: MLXArray, batchSize: Int) -> MLXArray {
+  /// - Returns: Int32 index array of length totalFrames
+  private func createAlignmentIndices(durations: MLXArray) -> MLXArray {
     // Create indices array by repeating each index according to its duration
     let indices = MLX.concatenated(
       durations.enumerated().map { index, duration in
@@ -528,18 +504,7 @@ public final class KokoroTTS {
         return MLX.repeated(MLXArray([index]), count: frameCount)
       }
     )
-
-    // Create one-hot encoded alignment matrix
-    let totalFrames = indices.shape[0]
-    var alignmentArray = [Float](repeating: 0.0, count: totalFrames * batchSize)
-    
-    for frame in 0 ..< totalFrames {
-      let phonemeIndex: Int = indices[frame].item()
-      alignmentArray[phonemeIndex * totalFrames + frame] = 1.0
-    }
-    
-    let alignmentTarget = MLXArray(alignmentArray).reshaped([batchSize, totalFrames])
-    return alignmentTarget.expandedDimensions(axis: 0)
+    return indices
   }
   
   /// Constants used throughout the TTS engine.
