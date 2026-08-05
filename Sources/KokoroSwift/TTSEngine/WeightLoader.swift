@@ -58,7 +58,7 @@ final class WeightLoader {
           
         // Weight normalization V parameters need conditional transposition
         } else if key.contains("weight_v") {
-          sanitizedWeights[key] = orientWeightV(key: key, value: value, rawWeights: weights)
+          sanitizedWeights[key] = orientWeightV(value)
         } else {
           sanitizedWeights[key] = value
         }
@@ -67,7 +67,7 @@ final class WeightLoader {
       } else if key.hasPrefix("text_encoder") {
         // Weight normalization V parameters need conditional transposition
         if key.contains("weight_v") {
-          sanitizedWeights[key] = orientWeightV(key: key, value: value, rawWeights: weights)
+          sanitizedWeights[key] = orientWeightV(value)
         } else {
           sanitizedWeights[key] = value
         }
@@ -80,7 +80,7 @@ final class WeightLoader {
 
         // Weight normalization V parameters need conditional transposition
         } else if key.contains("weight_v") {
-          sanitizedWeights[key] = orientWeightV(key: key, value: value, rawWeights: weights)
+          sanitizedWeights[key] = orientWeightV(value)
         } else {
           sanitizedWeights[key] = value
         }
@@ -90,47 +90,31 @@ final class WeightLoader {
     return sanitizedWeights
   }
 
-  /// Determines whether a `weight_v` tensor (from PyTorch's weight_norm
-  /// decomposition) is already in its correctly-oriented, as-exported
-  /// PyTorch shape, or needs its last two axes swapped.
+  /// Converts a `weight_v` tensor (from PyTorch's weight_norm
+  /// decomposition) from PyTorch's native per-layer-type shape into the
+  /// shape MLX's conv/convTransposed ops expect.
   ///
-  /// The previous approach (`checkArrayShape`) guessed based on whether the
-  /// kernel dimension looked "square" relative to the channel dimension --
-  /// which is wrong whenever a layer's actual kernel size doesn't happen to
-  /// coincidentally satisfy that heuristic. Confirmed empirically: both
-  /// `decoder.generator.conv_post.weight_v` ([22, 128, 7], a regular Conv1d
-  /// with PyTorch's native [out, in, kernel] layout) and
-  /// `decoder.generator.ups.0.weight_v` ([512, 256, 20], a ConvTranspose1d
-  /// with PyTorch's native [in, out, kernel] layout) are already correctly
-  /// oriented as loaded, yet the old heuristic transposed both anyway --
-  /// silently swapping the channel and kernel axes and scrambling which
-  /// weight tap applies to which input channel. That's not a scale bug,
-  /// it's structural corruption of the convolution itself, and it fully
-  /// explains generated audio that "doesn't resemble speech at all."
-  ///
-  /// `weight_g` gives a reliable, non-heuristic answer instead: PyTorch's
-  /// weight_norm always stores it with shape [N, 1, 1] where N is the TRUE
-  /// channel-axis size in the tensor's native orientation. If `weight_v`'s
-  /// own axis 0 already matches that N, it's already correctly oriented.
-  private static func orientWeightV(key: String, value: MLXArray, rawWeights: [String: MLXArray]) -> MLXArray {
-    let gKey = key.replacingOccurrences(of: "weight_v", with: "weight_g")
-    guard let weightG = rawWeights[gKey], value.shape.count == 3, let gAxis0 = weightG.shape.first else {
-      // No corresponding weight_g found to cross-check against -- leave
-      // as-loaded rather than guess.
-      return value
-    }
-
-    if value.shape[0] == gAxis0 {
-      // Already oriented with the channel axis first, matching weight_g.
-      return value
-    } else if value.shape[2] == gAxis0 {
-      // Channel axis is last; bring it to the front, preserving the
-      // relative order of the remaining two axes.
-      return value.transposed(2, 0, 1)
-    } else {
-      // Doesn't match either end -- can't reliably determine orientation.
-      // Leave as-loaded rather than apply a blind transpose.
-      return value
-    }
+  /// The previous approach (`checkArrayShape`) guessed per-layer whether to
+  /// swap axes based on whether the kernel dimension looked "square"
+  /// relative to the channel dimension -- inconsistent, and wrong whenever
+  /// a layer's actual kernel size doesn't coincidentally satisfy that
+  /// check. Confirmed against the reference PyTorch model (hexgrad/kokoro):
+  /// every weight_v tensor here uses weight_norm's default dim=0, so its
+  /// channel axis is always already at position 0 in PyTorch's native
+  /// layout -- [out, in, kernel] for Conv1d, [in, out, kernel] for
+  /// ConvTranspose1d, confirmed via decoder.generator.conv_post.weight_v
+  /// ([22, 128, 7]), decoder.generator.ups.0.weight_v ([512, 256, 20]),
+  /// and predictor.F0.0.conv1.weight_v ([512, 512, 3]) all matching their
+  /// reference nn.Conv1d/nn.ConvTranspose1d definitions exactly. MLX's
+  /// convention keeps that same channel axis first but wants kernel
+  /// second: [channel, kernel, other]. So every weight_v needs the same,
+  /// unconditional axes-1/2 swap -- never zero, and never a full reverse
+  /// (which is what the old heuristic's wrong branch, or ConvWeighted's
+  /// own runtime `x.shape.last == weight.shape.last` fallback comparing
+  /// channel-count to kernel-size, would otherwise apply on top and
+  /// scramble it a second time).
+  private static func orientWeightV(_ value: MLXArray) -> MLXArray {
+    guard value.shape.count == 3 else { return value }
+    return value.transposed(0, 2, 1)
   }
 }
